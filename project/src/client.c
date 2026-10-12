@@ -26,6 +26,9 @@ static int parse_port(const char *text, unsigned short *port_out) {
     return 0;
 }
 
+/*
+用来主动连接端口的函数
+*/
 static int connect_to_server(const char *host, unsigned short port) {
     int socket_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (socket_fd < 0) {
@@ -33,15 +36,20 @@ static int connect_to_server(const char *host, unsigned short port) {
         return -1;
     }
 
+    // address指代的是一个端口
     struct sockaddr_in address;
     memset(&address, 0, sizeof(address));
+    // IPv4家族
     address.sin_family = AF_INET;
+    // 把端口写入address
     address.sin_port = htons(port);
+    // 把ip地址写入address
     if (inet_pton(AF_INET, host, &address.sin_addr) != 1) {
         fprintf(stderr, "client: host must be an IPv4 address: %s\n", host);
         close(socket_fd);
         return -1;
     }
+    // 连接之后返回对应的socket_fd进程
     if (connect(socket_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("client: connect");
         close(socket_fd);
@@ -71,6 +79,7 @@ static int receive_reply(int socket_fd) {
         }
         if (strcmp(line, "BEGIN") == 0) {
             got_begin = 1;
+            // 输出前面的对话框
             fputs("AI: ", stdout);
             fflush(stdout);
             continue;
@@ -80,6 +89,7 @@ static int receive_reply(int socket_fd) {
                 fprintf(stderr, "client: invalid DATA frame\n");
                 return -1;
             }
+            // 输出正文内容
             fputs(payload, stdout);
             fflush(stdout);
             continue;
@@ -89,6 +99,7 @@ static int receive_reply(int socket_fd) {
                 fprintf(stderr, "client: unexpected END frame\n");
                 return -1;
             }
+            // 换行
             fputc('\n', stdout);
             return 0;
         }
@@ -124,6 +135,7 @@ int main(int argc, char **argv) {
 
     struct sigaction pipe_action;
     memset(&pipe_action, 0, sizeof(pipe_action));
+    // 忽略这个信号
     pipe_action.sa_handler = SIG_IGN;
     sigemptyset(&pipe_action.sa_mask);
     if (sigaction(SIGPIPE, &pipe_action, NULL) < 0) {
@@ -141,6 +153,7 @@ int main(int argc, char **argv) {
         fputs("you> ", stdout);
         fflush(stdout);
 
+        // stdin输入input，接受问题
         if (fgets(input, sizeof(input), stdin) == NULL) {
             (void)protocol_send_quit(socket_fd);
             break;
@@ -150,18 +163,22 @@ int main(int argc, char **argv) {
         if (length > 0 && input[length - 1] == '\n') {
             input[--length] = '\0';
         } else if (!feof(stdin)) {
+            // 这段是在处理标准输入过长的问题
             fprintf(stderr, "client: input is limited to %d bytes\n", PROTOCOL_MAX_INPUT - 1);
             int character;
+            // 清除掉溢出的内容
             while ((character = getchar()) != '\n' && character != EOF) {
                 /* Discard the remainder of an overlong input line. */
             }
             continue;
         }
 
+        // 语法输入退出
         if (strcmp(input, "/quit") == 0) {
             (void)protocol_send_quit(socket_fd);
             break;
         }
+        // 将请求发出
         if (protocol_send_query(socket_fd, input) < 0) {
             perror("client: send");
             break;

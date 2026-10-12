@@ -52,6 +52,7 @@ int protocol_read_line(int fd, char *buffer, size_t capacity) {
             }
             break;
         }
+        // 读到一行之后就结束
         if (byte == '\n') {
             break;
         }
@@ -146,7 +147,7 @@ static int protocol_send_frame(int fd, const char *kind, const char *payload) {
     char escaped[PROTOCOL_MAX_LINE];
     char frame[PROTOCOL_MAX_LINE];
 
-    // 处理转义字符
+    // 处理转义字符，将文本内容中本身带有的 \n 处理成 \\n 在客户端里面处理的时候能够将正文内容当成一行来处理
     if (protocol_escape(payload, escaped, sizeof(escaped)) < 0) {
         return -1;
     }
