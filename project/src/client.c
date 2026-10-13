@@ -1,4 +1,5 @@
 #include "protocol.h"
+#include "client_input.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -150,27 +151,13 @@ int main(int argc, char **argv) {
 
     char input[PROTOCOL_MAX_INPUT];
     for (;;) {
-        fputs("you> ", stdout);
-        fflush(stdout);
-
-        // stdin输入input，接受问题
-        if (fgets(input, sizeof(input), stdin) == NULL) {
+        int input_result = client_read_input(input, sizeof(input));
+        if (input_result <= 0) {
+            if (input_result < 0) {
+                perror("client: input");
+            }
             (void)protocol_send_quit(socket_fd);
             break;
-        }
-
-        size_t length = strlen(input);
-        if (length > 0 && input[length - 1] == '\n') {
-            input[--length] = '\0';
-        } else if (!feof(stdin)) {
-            // 这段是在处理标准输入过长的问题
-            fprintf(stderr, "client: input is limited to %d bytes\n", PROTOCOL_MAX_INPUT - 1);
-            int character;
-            // 清除掉溢出的内容
-            while ((character = getchar()) != '\n' && character != EOF) {
-                /* Discard the remainder of an overlong input line. */
-            }
-            continue;
         }
 
         // 语法输入退出
