@@ -9,6 +9,7 @@ BUILD_DIR := build
 BIN_DIR := bin
 COMMON_OBJECT := $(BUILD_DIR)/protocol.o
 LOGGER_OBJECT := $(BUILD_DIR)/logger.o
+SERVER_LOG_OBJECT := $(BUILD_DIR)/server_log.o
 SESSION_OBJECT := $(BUILD_DIR)/session.o
 AI_CLIENT_OBJECT := $(BUILD_DIR)/ai_client.o
 
@@ -33,7 +34,7 @@ $(BUILD_DIR):
 $(BUILD_DIR)/protocol.o: src/protocol.c include/protocol.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(BUILD_DIR)/server.o: src/server.c include/protocol.h include/logger.h include/session.h include/ai_client.h include/session_store.h | $(BUILD_DIR)
+$(BUILD_DIR)/server.o: src/server.c include/protocol.h include/logger.h include/server_log.h include/session.h include/ai_client.h include/session_store.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/client.o: src/client.c include/protocol.h include/client_input.h include/client_ui.h | $(BUILD_DIR)
@@ -51,6 +52,9 @@ $(BUILD_DIR)/session_store.o: src/session_store.c include/session_store.h includ
 $(BUILD_DIR)/logger.o: src/logger.c include/logger.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/server_log.o: src/server_log.c include/server_log.h | $(BUILD_DIR)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/session.o: src/session.c include/session.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
@@ -59,7 +63,7 @@ $(BUILD_DIR)/session.o: src/session.c include/session.h | $(BUILD_DIR)
 $(BUILD_DIR)/ai_client.o: src/ai_client.c include/ai_client.h include/session.h | $(BUILD_DIR)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(BIN_DIR)/server: $(BUILD_DIR)/session_store.o $(BUILD_DIR)/server.o $(COMMON_OBJECT) $(LOGGER_OBJECT) $(SESSION_OBJECT) $(AI_CLIENT_OBJECT) | $(BIN_DIR)
+$(BIN_DIR)/server: $(BUILD_DIR)/session_store.o $(BUILD_DIR)/server.o $(COMMON_OBJECT) $(LOGGER_OBJECT) $(SERVER_LOG_OBJECT) $(SESSION_OBJECT) $(AI_CLIENT_OBJECT) | $(BIN_DIR)
 	$(CC) $(LDFLAGS) $^ -o $@
 
 #这里client冒号后面跟着的两个依赖规则仍然会继续尝试生成

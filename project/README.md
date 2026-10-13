@@ -38,6 +38,15 @@ make -C project clean all
 ./project/bin/server 9090
 ```
 
+服务端启动时会在控制台打印监听端口和主进程 PID，同时写入活动日志 `project/logs/server.log`（持续追加）。每当有客户端 TCP 连接建立，日志会记录客户端 IP 和端口（`CONNECT`）、fork 出的子进程 PID（`FORK`），以及子进程处理结束的记录（`EXIT`），方便观察连接与进程活动：
+
+```
+[2026-10-13 12:00:00] START server listening on 127.0.0.1:9090 (pid=1234, log=.../logs/server.log)
+[2026-10-13 12:00:05] CONNECT peer=127.0.0.1:53124
+[2026-10-13 12:00:05] FORK child=1235 for peer=127.0.0.1:53124
+[2026-10-13 12:00:30] EXIT child=1235 peer=127.0.0.1:53124
+```
+
 再开一个或多个终端启动客户端：
 
 ```bash

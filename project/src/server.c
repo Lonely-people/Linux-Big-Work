@@ -1,5 +1,6 @@
 #include "protocol.h"
 #include "logger.h"
+#include "server_log.h"
 #include "session.h"
 #include "session_store.h"
 #include "ai_client.h"
@@ -377,8 +378,21 @@ int main(int argc, char **argv) {
     if (server_fd < 0) {
         return EXIT_FAILURE;
     }
-    printf("server listening on 127.0.0.1:%u\n", (unsigned int)port);
-    fflush(stdout);
+    // 打开服务活动日志：控制台 + logs/server.log 双输出
+    server_log_t server_log;
+    if (server_log_open(&server_log, log_directory, 1) < 0) {
+        // 日志文件打不开不阻塞服务：控制台输出仍然可用
+        perror("server: open server log");
+        server_log.fd = -1;
+        server_log.console = 1;
+        snprintf(server_log.path, sizeof(server_log.path), "(unavailable)");
+    }
+
+    char startup[SERVER_LOG_PATH_MAX + 128];
+    snprintf(startup, sizeof(startup),
+             "START server listening on 127.0.0.1:%u (pid=%ld, log=%s)",
+             (unsigned int)port, (long)getpid(), server_log.path);
+    (void)server_log_write(&server_log, startup);
 
     for (;;) {
         struct sockaddr_in client_address;
@@ -394,9 +408,23 @@ int main(int argc, char **argv) {
             break;
         }
 
+        // 记录客户端来源：IP 和端口
+        char peer[64];
+        if (inet_ntop(AF_INET, &client_address.sin_addr, peer, sizeof(peer)) == NULL) {
+            snprintf(peer, sizeof(peer), "unknown");
+        }
+        char peer_text[96];
+        snprintf(peer_text, sizeof(peer_text), "%s:%u", peer, (unsigned int)ntohs(client_address.sin_port));
+        char connect_line[160];
+        snprintf(connect_line, sizeof(connect_line), "CONNECT peer=%s", peer_text);
+        (void)server_log_write(&server_log, connect_line);
+
         pid_t child = fork();
         if (child < 0) {
             perror("server: fork");
+            char fork_error[160];
+            snprintf(fork_error, sizeof(fork_error), "ERROR fork failed for peer=%s", peer_text);
+            (void)server_log_write(&server_log, fork_error);
             (void)protocol_send_error(client_fd, "server cannot create a session process");
             close(client_fd);
             continue;
@@ -407,12 +435,20 @@ int main(int argc, char **argv) {
             close(server_fd);
             handle_client(client_fd, session_directory);
             close(client_fd);
+            // 子进程结束前记录自己的退出，父进程无需感知
+            char exit_line[160];
+            snprintf(exit_line, sizeof(exit_line), "EXIT child=%ld peer=%s", (long)getpid(), peer_text);
+            (void)server_log_write(&server_log, exit_line);
             _exit(EXIT_SUCCESS);
         }
         // 父进程继续等待下一个来的客户端连接，就能够处理多个不同的客户端请求了
+        char fork_line[160];
+        snprintf(fork_line, sizeof(fork_line), "FORK child=%ld for peer=%s", (long)child, peer_text);
+        (void)server_log_write(&server_log, fork_line);
         close(client_fd);
     }
 
     close(server_fd);
+    server_log_close(&server_log);
     return EXIT_FAILURE;
 }
