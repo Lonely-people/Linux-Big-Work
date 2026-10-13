@@ -18,7 +18,9 @@
 # 编译目录
 project/build/
 project/bin/
-project/log/
+project/logs/
+project/sessions/
+.venv/
 
 # 日志
 *.log
