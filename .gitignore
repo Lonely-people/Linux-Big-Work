@@ -22,3 +22,15 @@ project/log/
 
 # 日志
 *.log
+
+# Local model runtime and weights
+/llama.cpp/
+/models/
+
+# Runtime conversation data
+/project/sessions/
+/project/logs/
+
+# Python caches
+__pycache__/
+*.py[cod]
