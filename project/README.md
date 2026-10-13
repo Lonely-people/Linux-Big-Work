@@ -149,3 +149,5 @@ make -C project test
 - `client: connect: Connection refused`：检查聊天服务器是否在运行，以及客户端端口是否和服务器一致（默认 `9090`）。
 - `cannot connect to llama-server`：检查 llama-server 是否在运行，并监听 `127.0.0.1:8080`。
 - 模型加载失败：确认模型路径存在；根据显存情况调整 `--n-gpu-layers`。
+
+User messages and the interactive input editor use cyan; AI replies use the terminal default color. Colors are display-only and are not stored in sessions or logs. Piped, redirected, and TERM=dumb input remains uncolored.
