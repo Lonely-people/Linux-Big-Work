@@ -143,7 +143,7 @@ int protocol_unescape(const char *input, char *output, size_t capacity) {
     return 0;
 }
 
-static int protocol_send_frame(int fd, const char *kind, const char *payload) {
+int protocol_send_frame(int fd, const char *kind, const char *payload) {
     char escaped[PROTOCOL_MAX_LINE];
     char frame[PROTOCOL_MAX_LINE];
 
@@ -186,4 +186,22 @@ int protocol_send_end(int fd) {
 
 int protocol_send_error(int fd, const char *text) {
     return protocol_send_frame(fd, "ERROR", text);
+}
+
+/* Chunks are small enough even if every byte needs escaping. */
+int protocol_send_text(int fd, const char *kind, const char *text) {
+    size_t length = strlen(text), offset = 0;
+    while (offset < length) {
+        size_t count = length - offset;
+        if (count > 2048) count = 2048;
+        /* Keep valid UTF-8 characters together for streaming consumers. */
+        while (offset + count < length && count > 0 &&
+               ((unsigned char)text[offset + count] & 0xc0) == 0x80) --count;
+        if (!count) count = length - offset > 2048 ? 2048 : length - offset;
+        char chunk[2049];
+        memcpy(chunk, text + offset, count); chunk[count] = 0;
+        if (protocol_send_frame(fd, kind, chunk) < 0) return -1;
+        offset += count;
+    }
+    return 0;
 }

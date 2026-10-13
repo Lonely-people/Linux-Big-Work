@@ -1,6 +1,7 @@
 #include "protocol.h"
 #include "logger.h"
 #include "session.h"
+#include "session_store.h"
 #include "ai_client.h"
 
 #include <arpa/inet.h>
@@ -60,7 +61,7 @@ static int forward_model_chunk(const char *text, size_t length, void *userdata) 
     terminated[length] = '\0';
 
     // 向客户端发送内容
-    int result = protocol_send_data(context->client_fd, terminated);
+    int result = protocol_send_text(context->client_fd, "DATA", terminated);
     free(terminated);
     if (result < 0) return -1;
     return append_response(context, text, length);
@@ -94,102 +95,148 @@ static int parse_port(const char *text, unsigned short *port_out) {
 /*
 这个函数是处理一个客户端的多次请求的函数
 */
-static void handle_client(int client_fd, logger_t *logger, session_t *session) {
-    // 存下读到的全部内容
-    char line[PROTOCOL_MAX_LINE];
-    // 去掉表示符之后得到的内容
-    char question[PROTOCOL_MAX_INPUT];
+static int send_literal(int fd, const char *text) {
+    return protocol_send_all(fd, text, strlen(text));
+}
 
+static int send_list_entry(unsigned long id, time_t updated, int busy,
+                           const char *title, void *userdata) {
+    int fd = *(int *)userdata;
+    char kind[128];
+    snprintf(kind, sizeof(kind), "SESSION %lu %lld %d", id, (long long)updated, busy);
+    return protocol_send_frame(fd, kind, title);
+}
+
+static int send_history(int fd, const stored_session_t *stored) {
+    char kind[128];
+    snprintf(kind, sizeof(kind), "OPENED %lu", stored->id);
+    if (protocol_send_frame(fd, kind, stored->title) < 0) return -1;
+    for (size_t i = 0; i < stored->count; ++i) {
+        const stored_message_t *message = &stored->messages[i];
+        char begin[64];
+        snprintf(begin, sizeof(begin), "MESSAGE %c %d\n", message->role, message->context);
+        if (send_literal(fd, begin) < 0 ||
+            protocol_send_text(fd, "TEXT", message->text) < 0 ||
+            send_literal(fd, "MESSAGE_END\n") < 0) return -1;
+    }
+    return send_literal(fd, "HISTORY_END\n");
+}
+
+static int open_log(logger_t *logger, const char *directory, unsigned long id) {
+    char path[LOGGER_PATH_MAX];
+    if (snprintf(path, sizeof(path), "%s/logs", directory) >= (int)sizeof(path)) return -1;
+    return logger_open(logger, path, id);
+}
+
+static void handle_client(int client_fd, const char *directory) {
+    char line[PROTOCOL_MAX_LINE], question[PROTOCOL_MAX_INPUT];
+    stored_session_t stored = {.lock_fd = -1};
+    session_t session;
+    session_init(&session);
+    logger_t logger = {.fd = -1};
+    int managed = 0;
     for (;;) {
-        // 从客户端端口读取一行内容
         int result = protocol_read_line(client_fd, line, sizeof(line));
-        if (result == 0) {
+        if (result <= 0) {
+            if (result == -2) { (void)protocol_send_error(client_fd, "request line is too long"); continue; }
             break;
         }
-        if (result == -1) {
-            perror("server: recv");
-            break;
+        if (strcmp(line, "QUIT") == 0) break;
+        if (strcmp(line, "SESSIONS") == 0) {
+            managed = 1;
+            if (send_literal(client_fd, "SESSIONS_BEGIN\n") < 0) break;
+            if (store_list(directory, send_list_entry, &client_fd) < 0) {
+                if (protocol_send_error(client_fd, "cannot list sessions") < 0) break;
+            } else if (send_literal(client_fd, "SESSIONS_END\n") < 0) break;
+            continue;
         }
-        if (result == -2) {
-            if (protocol_send_error(client_fd, "request line is too long") < 0) {
-                break;
+        if (strcmp(line, "LEAVE") == 0) {
+            managed = 1;
+            logger_close(&logger); store_close(&stored);
+            session_destroy(&session); session_init(&session);
+            if (send_literal(client_fd, "LEFT\n") < 0) break;
+            continue;
+        }
+        if (strcmp(line, "NEW") == 0 || strncmp(line, "OPEN ", 5) == 0) {
+            managed = 1;
+            stored_session_t candidate = {.lock_fd = -1};
+            int opened;
+            if (strcmp(line, "NEW") == 0) opened = store_create(directory, &candidate);
+            else {
+                char *end = NULL;
+                errno = 0;
+                unsigned long id = strtoul(line + 5, &end, 10);
+                if (errno || end == line + 5 || *end || !id || line[5] < '0' || line[5] > '9') {
+                    (void)protocol_send_error(client_fd, "invalid session id"); continue;
+                }
+                opened = store_open(directory, id, &candidate);
             }
-            continue;
-        }
-
-        if (strcmp(line, "QUIT") == 0) {
-            break;
-        }
-        if (strncmp(line, "Q ", 2) != 0) {
-            if (protocol_send_error(client_fd, "expected Q <question> or QUIT") < 0) {
-                break;
+            if (opened < 0) {
+                const char *error = errno == EWOULDBLOCK ? "session is in use" : "cannot open session";
+                if (protocol_send_error(client_fd, error) < 0) break;
+                continue;
             }
-            continue;
-        }
-
-        // 用来将转义字符变成普通的文本
-        if (protocol_unescape(line + 2, question, sizeof(question)) < 0) {
-            if (protocol_send_error(client_fd, "invalid escaped question") < 0) {
-                break;
+            session_t restored;
+            if (store_context(&candidate, &restored) < 0) {
+                store_close(&candidate);
+                if (protocol_send_error(client_fd, "cannot restore context") < 0) break;
+                continue;
             }
+            logger_close(&logger); store_close(&stored); session_destroy(&session);
+            stored = candidate; session = restored;
+            if (open_log(&logger, directory, stored.id) < 0) perror("server: open session log");
+            if (send_history(client_fd, &stored) < 0) break;
             continue;
         }
-
-        // 把question写在日志里面
-        if (logger_write_user(logger, question) < 0) {
-            perror("server: write user log");
-        }
-        // 把question保存在session日志里面
-        if (session_add_user(session, question) < 0) {
-            (void)protocol_send_error(client_fd, "cannot store session history");
+        if (strncmp(line, "Q ", 2) != 0 || protocol_unescape(line + 2, question, sizeof(question)) < 0) {
+            if (protocol_send_error(client_fd, "invalid request") < 0) break;
             continue;
         }
-        // 向客户端发出要写入的信号
-        if (protocol_send_begin(client_fd) < 0) {
-            //如果失败就撤回session里面保存的内容
-            session_remove_last_user(session);
-            break;
+        if (!stored.id) {
+            if (managed) { (void)protocol_send_error(client_fd, "select a session first"); continue; }
+            if (store_create(directory, &stored) < 0) {
+                if (protocol_send_error(client_fd, "cannot create session") < 0) break;
+                continue;
+            }
+            if (open_log(&logger, directory, stored.id) < 0) perror("server: open session log");
         }
-
-        // 配置的是服务端向模型请求的部分
+        /* Build a disposable context: trimming a failed request must never
+         * remove the oldest successful turn from the selected session. */
+        session_t working;
+        if (store_context(&stored, &working) < 0) {
+            (void)protocol_send_error(client_fd, "cannot restore context"); continue;
+        }
+        if (session_add_user(&working, question) < 0) {
+            session_destroy(&working);
+            (void)protocol_send_error(client_fd, "cannot store input"); continue;
+        }
+        if (protocol_send_begin(client_fd) < 0) { session_destroy(&working); break; }
         stream_context_t stream = {.client_fd = client_fd};
-        //这个是模型服务的地址
         const ai_client_config_t config = {
-            .host = AI_DEFAULT_HOST,
-            .port = AI_DEFAULT_PORT,
-            .path = AI_DEFAULT_PATH,
+            .host = AI_DEFAULT_HOST, .port = AI_DEFAULT_PORT, .path = AI_DEFAULT_PATH,
         };
         char error[256] = {0};
-        
-        // 这个是向模型发出提问，然后模型给出回答的函数.
-        // 算的上核心函数，实现了流式生成
-        if (ai_client_stream(&config, session, forward_model_chunk, &stream,
-                             error, sizeof(error)) < 0) {
-            free(stream.response);
-            session_remove_last_user(session);
-            if (protocol_send_error(client_fd, error[0] == '\0'
-                                                ? "model request failed" : error) < 0) {
-                break;
-            }
-            continue;
+        result = ai_client_stream(&config, &working, forward_model_chunk, &stream, error, sizeof(error));
+        const char *answer = stream.response ? stream.response : "";
+        if (result == 0 && session_add_assistant(&working, answer) < 0) {
+            result = -1; snprintf(error, sizeof(error), "cannot store reply");
         }
-
-        // 发送结束
-        if (protocol_send_end(client_fd) < 0) {
-            free(stream.response);
-            session_remove_last_user(session);
-            break;
+        if (result == 0 && store_commit_turn(&stored, question, answer) < 0) {
+            result = -1; snprintf(error, sizeof(error), "cannot save conversation; turn not saved");
         }
-        const char *complete_response = stream.response == NULL ? "" : stream.response;
-        // 将模型生成的内容写入session
-        if (session_add_assistant(session, complete_response) < 0) {
-            perror("server: store assistant history");
-        }
-        if (logger_write_assistant(logger, complete_response) < 0) {
-            perror("server: write assistant log");
+        if (result == 0) {
+            session_destroy(&session); session = working;
+            if (logger_write_user(&logger, question) < 0 || logger_write_assistant(&logger, answer) < 0)
+                perror("server: write session log");
+            result = protocol_send_end(client_fd);
+        } else {
+            session_destroy(&working);
+            result = protocol_send_error(client_fd, error[0] ? error : "model request failed; turn not saved");
         }
         free(stream.response);
+        if (result < 0) break;
     }
+    logger_close(&logger); store_close(&stored); session_destroy(&session);
 }
 
 static int prepare_log_directory(const char *program_path, char *directory,
@@ -290,6 +337,16 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
+    char session_directory[STORE_PATH_MAX];
+    char *slash = strrchr(log_directory, '/');
+    size_t prefix = slash ? (size_t)(slash - log_directory) : 0;
+    int path_length = slash ? snprintf(session_directory, sizeof(session_directory), "%.*s/sessions", (int)prefix, log_directory)
+                            : snprintf(session_directory, sizeof(session_directory), "sessions");
+    if (path_length < 0 || path_length >= (int)sizeof(session_directory) ||
+        store_init(session_directory, log_directory) < 0) {
+        perror("server: initialize session store"); return EXIT_FAILURE;
+    }
+
     // child_action是在定义信号产生之后的行为
     struct sigaction child_action;
     memset(&child_action, 0, sizeof(child_action));
@@ -323,7 +380,6 @@ int main(int argc, char **argv) {
     printf("server listening on 127.0.0.1:%u\n", (unsigned int)port);
     fflush(stdout);
 
-    unsigned long next_session_id = 1;
     for (;;) {
         struct sockaddr_in client_address;
         socklen_t client_length = sizeof(client_address);
@@ -338,8 +394,6 @@ int main(int argc, char **argv) {
             break;
         }
 
-        // 这里的处理有不小的隐患，重新编号之后不会覆盖旧有日志，而是直接接在原来的日志后面
-        unsigned long session_id = next_session_id++;
         pid_t child = fork();
         if (child < 0) {
             perror("server: fork");
@@ -351,24 +405,7 @@ int main(int argc, char **argv) {
         if (child == 0) {
             // 关闭不需要监听的socket
             close(server_fd);
-            // 定义的结构体，指向一个日志文件
-            logger_t logger;
-            if (logger_open(&logger, log_directory, session_id) < 0) {
-                perror("server: open session log");
-                logger.fd = -1;
-            }
-            // 这个指的是客户端连接期间的对话历史
-            session_t session;
-            if (session_init(&session) < 0) {
-                (void)protocol_send_error(client_fd, "cannot initialize session");
-                logger_close(&logger);
-                close(client_fd);
-                _exit(EXIT_FAILURE);
-            }
-            handle_client(client_fd, &logger, &session);
-            // 做完了之后，子进程会在这里被回收掉
-            session_destroy(&session);
-            logger_close(&logger);
+            handle_client(client_fd, session_directory);
             close(client_fd);
             _exit(EXIT_SUCCESS);
         }

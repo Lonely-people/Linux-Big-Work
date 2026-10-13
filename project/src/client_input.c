@@ -15,7 +15,7 @@
 
 /* Text offsets are UTF-8 byte offsets; display coordinates are terminal cells. */
 typedef struct { int row, column; } position_t;
-typedef struct {
+typedef struct client_editor {
     char *text;
     size_t capacity, length, cursor;
     position_t *positions;
@@ -251,7 +251,7 @@ static int read_byte(editor_t *e, unsigned char *byte, int timeout) {
     return result < 0 ? -1 : (int)result;
 }
 
-enum { KEY_NONE, KEY_ENTER };
+enum { KEY_NONE, KEY_ENTER, KEY_PAGE_UP, KEY_PAGE_DOWN };
 
 static int escape_key(editor_t *e) {
     unsigned char byte;
@@ -291,6 +291,8 @@ static int escape_key(editor_t *e) {
         return KEY_NONE;
     }
     if (e->pasting) return KEY_NONE;
+    if (strcmp(sequence, "5~") == 0) return KEY_PAGE_UP;
+    if (strcmp(sequence, "6~") == 0) return KEY_PAGE_DOWN;
     if (strcmp(sequence, "200~") == 0) {
         e->pasting = 1;
         e->paste_cr = e->paste_overflow = 0;
@@ -334,13 +336,46 @@ static void insert_character(editor_t *e, unsigned char first) {
     insert(e, bytes, (size_t)count);
 }
 
+/* Shared editing semantics for the plain reader and the full-screen loop. */
+static int feed_key(editor_t *e, unsigned char byte) {
+    if (byte == 3) return CLIENT_EDITOR_EXIT;
+    if (byte == 4 && !e->pasting) {
+        if (e->length == 0) return CLIENT_EDITOR_EXIT;
+        remove_range(e, e->cursor, next_char(e, e->cursor));
+    } else if (byte == 27) {
+        int key = escape_key(e);
+        if (key == KEY_PAGE_UP) return CLIENT_EDITOR_PAGE_UP;
+        if (key == KEY_PAGE_DOWN) return CLIENT_EDITOR_PAGE_DOWN;
+        if (key == KEY_ENTER) byte = '\r';
+        else return CLIENT_EDITOR_EDIT;
+    } else if (e->pasting) {
+        if (byte == '\r') { insert(e, "\n", 1); e->paste_cr = 1; }
+        else if (byte == '\n') {
+            if (!e->paste_cr) insert(e, "\n", 1);
+            e->paste_cr = 0;
+        } else {
+            e->paste_cr = 0;
+            if (byte >= 32 && byte != 127) insert_character(e, byte);
+            else if (byte == '\t') insert(e, "\t", 1);
+        }
+        return CLIENT_EDITOR_EDIT;
+    } else if (byte == '\n') insert(e, "\n", 1);
+    else if (byte == 127 || byte == 8) remove_range(e, previous_char(e, e->cursor), e->cursor);
+    else if (byte >= 32 && byte != 127) insert_character(e, byte);
+    else if (byte == '\t') insert(e, "\t", 1);
+    if (byte == '\r') {
+        if (frame_fits(e->text)) return CLIENT_EDITOR_SUBMIT;
+        e->notice = "Message exceeds protocol frame limit; delete text before sending.";
+        fputc('\a', stdout);
+    }
+    return CLIENT_EDITOR_EDIT;
+}
+
 static int edit_input(editor_t *e) {
     redraw(e);
     for (;;) {
         if (resized) {
             resized = 0;
-            /* Reflow changes relative coordinates. Start a fresh editor at
-             * the bottom, retaining the prior display in terminal scrollback. */
             dimensions(e);
             for (int i = 0; i < e->rows; ++i) fputs("\r\n", stdout);
             e->screen_row = e->drawn_rows = 0;
@@ -351,36 +386,65 @@ static int edit_input(editor_t *e) {
         int result = read_byte(e, &byte, 100);
         if (result == -2) continue;
         if (result <= 0) return result;
-        if (byte == 3) return 0;
-        if (byte == 4 && !e->pasting) {
-            if (e->length == 0) return 0;
-            remove_range(e, e->cursor, next_char(e, e->cursor));
-        } else if (byte == 27) {
-            if (escape_key(e) == KEY_ENTER) byte = '\r';
-            else { if (!e->pasting) redraw(e); continue; }
-        } else if (e->pasting) {
-            if (byte == '\r') { insert(e, "\n", 1); e->paste_cr = 1; }
-            else if (byte == '\n') {
-                if (!e->paste_cr) insert(e, "\n", 1);
-                e->paste_cr = 0;
-            } else {
-                e->paste_cr = 0;
-                if (byte >= 32 && byte != 127) insert_character(e, byte);
-                else if (byte == '\t') insert(e, "\t", 1);
-            }
-            continue;
-        } else if (byte == '\n') insert(e, "\n", 1);
-        else if (byte == 127 || byte == 8) remove_range(e, previous_char(e, e->cursor), e->cursor);
-        else if (byte >= 32 && byte != 127) insert_character(e, byte);
-        else if (byte == '\t') insert(e, "\t", 1);
-
-        if (byte == '\r') {
-            if (frame_fits(e->text)) return 1;
-            e->notice = "Message exceeds protocol frame limit; delete text before sending.";
-            fputc('\a', stdout);
-        }
-        redraw(e);
+        result = feed_key(e, byte);
+        if (result == CLIENT_EDITOR_EXIT) return 0;
+        if (result == CLIENT_EDITOR_SUBMIT) return 1;
+        if (!e->pasting) redraw(e);
     }
+}
+
+client_editor_t *client_editor_create(size_t capacity) {
+    if (capacity < 2 || capacity > PROTOCOL_MAX_INPUT) { errno = EINVAL; return NULL; }
+    editor_t *e = calloc(1, sizeof(*e));
+    if (!e) return NULL;
+    e->text = calloc(capacity, 1);
+    e->positions = calloc(capacity, sizeof(*e->positions));
+    if (!e->text || !e->positions) { free(e->text); free(e->positions); free(e); return NULL; }
+    e->capacity = capacity; e->pending_byte = e->goal_column = -1;
+    interrupted = 0;
+    return e;
+}
+
+void client_editor_destroy(client_editor_t *e) {
+    if (e) { free(e->text); free(e->positions); free(e); }
+}
+
+const char *client_editor_text(const client_editor_t *e) { return e->text; }
+
+void client_editor_clear(client_editor_t *e) {
+    e->text[0] = 0; e->length = e->cursor = 0;
+    e->goal_column = e->pending_byte = -1;
+    e->pasting = e->paste_cr = e->paste_overflow = 0; e->notice = NULL;
+}
+
+int client_editor_read_key(client_editor_t *e) {
+    unsigned char byte;
+    int result = read_byte(e, &byte, 0);
+    if (result == -2) return CLIENT_EDITOR_EDIT;
+    if (result <= 0) return CLIENT_EDITOR_EXIT;
+    return feed_key(e, byte);
+}
+
+int client_editor_pending(const client_editor_t *e) { return e->pending_byte >= 0; }
+
+int client_editor_height(client_editor_t *e, int columns, int maximum) {
+    e->columns = columns; layout(e);
+    int height = e->positions[e->length].row + 1;
+    if (height > maximum) height = maximum;
+    return height;
+}
+
+const char *client_editor_notice(const client_editor_t *e) { return e->notice; }
+
+void client_editor_draw(client_editor_t *e, int first_row, int height) {
+    layout(e);
+    int cursor_row = e->positions[e->cursor].row;
+    int top = cursor_row >= height ? cursor_row - height + 1 : 0;
+    for (int i = 0; i < height; ++i) {
+        printf("\033[%d;1H", first_row + i);
+        render_line(e, top + i);
+    }
+    printf("\033[%d;%dH", first_row + cursor_row - top, e->positions[e->cursor].column + 1);
 }
 
 static int read_stream_input(char *buffer, size_t capacity) {

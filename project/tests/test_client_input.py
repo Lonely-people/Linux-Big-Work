@@ -131,7 +131,7 @@ class Session:
         self.screen = Screen(columns, rows)
         self.output = bytearray()
         self.process = subprocess.Popen(
-            [CLIENT, "127.0.0.1", str(self.peer.port)],
+            [CLIENT, "--plain", "127.0.0.1", str(self.peer.port)],
             stdin=self.slave, stdout=self.slave, stderr=self.slave,
             env={**os.environ, "TERM": "xterm-256color", "LC_ALL": "C"},
         )
@@ -332,7 +332,7 @@ class ClientInputTests(unittest.TestCase):
     def test_pipe_input_and_overlong_line_recovery(self):
         peer = Peer()
         self.addCleanup(peer.close)
-        result = subprocess.run([CLIENT, "127.0.0.1", str(peer.port)],
+        result = subprocess.run([CLIENT, "--plain", "127.0.0.1", str(peer.port)],
                                 input=b"a" * 4096 + b"\nfirst\nlast",
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
         self.assertEqual(result.returncode, 0)
@@ -360,7 +360,7 @@ class ClientInputTests(unittest.TestCase):
                 self.addCleanup(os.close, slave)
                 original = termios.tcgetattr(slave)
                 env = {**os.environ, "TERM": "dumb" if dumb else "xterm-256color"}
-                process = subprocess.Popen([CLIENT, "127.0.0.1", str(peer.port)], stdin=slave,
+                process = subprocess.Popen([CLIENT, "--plain", "127.0.0.1", str(peer.port)], stdin=slave,
                                            stdout=slave if dumb else subprocess.PIPE,
                                            stderr=subprocess.PIPE, env=env)
                 os.write(master, b"hello\n/quit\n")

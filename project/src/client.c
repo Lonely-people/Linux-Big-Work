@@ -1,5 +1,6 @@
 #include "protocol.h"
 #include "client_input.h"
+#include "client_ui.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -119,18 +120,22 @@ static int receive_reply(int socket_fd) {
 }
 
 int main(int argc, char **argv) {
+    const char *program_name = argv[0];
     const char *host = "127.0.0.1";
     unsigned short port = PROTOCOL_DEFAULT_PORT;
 
+    int plain = argc > 1 && strcmp(argv[1], "--plain") == 0;
+    if (plain) { --argc; ++argv; }
+
     if (argc > 3) {
-        fprintf(stderr, "Usage: %s [host] [port]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--plain] [host] [port]\n", program_name);
         return EXIT_FAILURE;
     }
     if (argc >= 2) {
         host = argv[1];
     }
     if (argc == 3 && parse_port(argv[2], &port) < 0) {
-        fprintf(stderr, "Usage: %s [host] [port]\n", argv[0]);
+        fprintf(stderr, "Usage: %s [--plain] [host] [port]\n", program_name);
         return EXIT_FAILURE;
     }
 
@@ -147,6 +152,13 @@ int main(int argc, char **argv) {
     int socket_fd = connect_to_server(host, port);
     if (socket_fd < 0) {
         return EXIT_FAILURE;
+    }
+
+    if (!plain && client_ui_available()) {
+        int result = client_ui_run(socket_fd);
+        if (result < 0) perror("client: session interface");
+        close(socket_fd);
+        return result < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
     char input[PROTOCOL_MAX_INPUT];

@@ -33,6 +33,10 @@ int protocol_read_line(int fd, char *buffer, size_t capacity);
 int protocol_escape(const char *input, char *output, size_t capacity);
 int protocol_unescape(const char *input, char *output, size_t capacity);
 
+/* Generic escaped frame and chunked text for session management/history. */
+int protocol_send_frame(int fd, const char *kind, const char *payload);
+int protocol_send_text(int fd, const char *kind, const char *text);
+
 int protocol_send_query(int fd, const char *text);
 int protocol_send_quit(int fd);
 int protocol_send_begin(int fd);
