@@ -16,4 +16,9 @@
 *.dylib
 
 # 编译目录
-build/
+project/build/
+project/bin/
+project/log/
+
+# 日志
+*.log
