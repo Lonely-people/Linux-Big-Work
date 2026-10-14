@@ -162,8 +162,20 @@ static int history_lines(ui_t *ui, lines_t *lines) {
         const char *suffix = m->saved == 1 ? "" : m->saved == 2 ? " [legacy / not in context]" :
                              ui->operation == REPLYING && i >= ui->turn_start ? " [receiving / not saved yet]" : " [not saved]";
         snprintf(prefix, sizeof(prefix), "%s%s:", role, suffix);
+        size_t first_line = lines->count;
         if (wrap_text(lines, prefix, ui->columns - 1) < 0 ||
             wrap_text(lines, m->text, ui->columns - 1) < 0 || add_line(lines) < 0) return -1;
+        /* Color after wrapping; reset every line for scrolling and layout. */
+        if (m->role == 'U') {
+            for (size_t row = first_line; row < lines->count; ++row) {
+                size_t length = strlen(lines->items[row]);
+                char *colored = malloc(length + sizeof("\033[36m") + sizeof("\033[0m") - 1);
+                if (!colored) return -1;
+                sprintf(colored, "\033[36m%s\033[0m", lines->items[row]);
+                free(lines->items[row]);
+                lines->items[row] = colored;
+            }
+        }
     }
     return 0;
 }

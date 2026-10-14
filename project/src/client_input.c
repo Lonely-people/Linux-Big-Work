@@ -116,6 +116,7 @@ static void move_up(int rows) {
 }
 
 static void render_line(const editor_t *e, int row) {
+    fputs("\033[36m", stdout);
     if (row == 0) fwrite("you> ", 1, (size_t)prompt_width(e), stdout);
     for (size_t at = 0; at < e->length; at = next_char(e, at)) {
         if (e->positions[at].row != row || e->text[at] == '\n') continue;
@@ -126,6 +127,7 @@ static void render_line(const editor_t *e, int row) {
         } else if (width > usable_columns(e)) fputc('?', stdout);
         else fwrite(e->text + at, 1, next_char(e, at) - at, stdout);
     }
+    fputs("\033[0m", stdout);
 }
 
 static void redraw(editor_t *e) {
