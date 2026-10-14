@@ -18,6 +18,12 @@
 # 编译目录
 project/build/
 project/bin/
+project/logs/
+project/sessions/
+.venv/
+
+# 日志
+*.log
 project/log/
 
 # 日志

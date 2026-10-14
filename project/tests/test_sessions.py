@@ -276,7 +276,7 @@ class SessionTests(unittest.TestCase):
         stub = directory / 'fake_model.c'
         stub.write_text(MODEL_STUB)
         cls.server_binary = directory / 'server'
-        sources = [ROOT/'src'/name for name in ['server.c', 'protocol.c', 'session.c', 'session_store.c', 'logger.c']]
+        sources = [ROOT/'src'/name for name in ['server.c', 'protocol.c', 'session.c', 'session_store.c', 'logger.c', 'server_log.c']]
         subprocess.run(['gcc', '-std=c11', '-D_POSIX_C_SOURCE=200809L', '-D_XOPEN_SOURCE=700',
                         '-Wall', '-Wextra', '-Wpedantic', '-I'+str(ROOT/'include'),
                         *map(str, sources), str(stub), '-o', str(cls.server_binary)], check=True)
